@@ -1,3 +1,14 @@
+# Ignore files with poasswords and keys
+terraform.tfvars
+*.tfvars
+
+# Ignore work folder and cashe
 .terraform/
-*.tfstate
-*.tfstate.backup.terraform/
+terraform.tfstate
+terraform.tfstate.backup
+crash.log
+*.tfstate*
+
+# System files OS
+.DS_Store
+Thumbs.db

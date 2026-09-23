@@ -5,9 +5,7 @@ provider "aws" {
 }
 
 
-# ==========================================
-# СЕТЬ И БЕЗОПАСНОСТЬ
-# ==========================================
+# Network
 
 data "aws_vpc" "default" {
   default = true
@@ -20,7 +18,7 @@ data "aws_subnets" "default" {
   }
 }
 
-# 1. Security Group для Балансировщика (открываем порт 80 для всего мира)
+# 1. Security Group ALB
 resource "aws_security_group" "alb_sg" {
   name        = "alb-security-group"
   description = "Allow HTTP traffic from the internet"
@@ -44,7 +42,7 @@ resource "aws_security_group" "alb_sg" {
   }
 }
 
-# 2. Security Group для серверов в ASG (порт 3000 только от ALB)
+# 2. Security Group for ASG (port 3000 only from ALB)
 resource "aws_security_group" "app_sg" {
   name_prefix        = "node-app-sg"
   description = "Allow port 3000 from ALB and SSH"
@@ -72,7 +70,7 @@ resource "aws_security_group" "app_sg" {
   }
 }
 
-# 3. Security Group для Базы Данных (доступ только с серверов приложения)
+# 3. Security Group for BD 
 resource "aws_security_group" "db_sg" {
   name_prefix        = "db-security-group"
   description = "Allow PostgreSQL access from app servers"
@@ -97,10 +95,7 @@ resource "aws_security_group" "db_sg" {
 }
 
 
-# ==========================================
-# БАЗА ДАННЫХ (AWS RDS PostgreSQL)
-# ==========================================
-
+# 3. DataBase
 resource "aws_db_subnet_group" "db_subnet_group" {
   name       = "my-app-db-subnet-group"
   subnet_ids = data.aws_subnets.default.ids
@@ -128,10 +123,7 @@ resource "aws_db_instance" "postgres" {
 }
 
 
-# ==========================================
-# APPLICATION LOAD BALANCER (ALB)
-# ==========================================
-
+# 4. ALB
 resource "aws_lb" "app_alb" {
   name               = "node-app-alb"
   internal           = false
@@ -172,9 +164,7 @@ resource "aws_lb_listener" "web" {
 }
 
 
-# ==========================================
-# AUTO SCALING GROUP (ASG) И ШАБЛОН СЕРВЕРОВ
-# ==========================================
+# 5. AUTO SCALING GROUP (ASG)
 
 data "aws_ami" "ubuntu" {
   most_recent = true
@@ -189,7 +179,7 @@ data "aws_ami" "ubuntu" {
   owners = ["099720109477"]
 }
 
-# Шаблон, по которому ASG будет штамповать EC2 инстансы
+# 6. EC2 instances
 resource "aws_launch_template" "app_lt" {
   name_prefix   = "node-app-lt-"
   image_id      = data.aws_ami.ubuntu.id
@@ -197,25 +187,21 @@ resource "aws_launch_template" "app_lt" {
 
   vpc_security_group_ids = [aws_security_group.app_sg.id]
 
-  user_data = base64encode(<<-EOF
+user_data = base64encode(<<-EOF
               #!/bin/bash
+              # Install Docker
               apt-get update -y
-              apt-get install -y docker.io
+              apt-get install -y docker.io git
               systemctl start docker
               systemctl enable docker
               
-              docker run -d \
-                --name node-app \
-                -p 3000:3000 \
-                -e DB_HOST="${aws_db_instance.postgres.address}" \
-                -e DB_PORT="5432" \
-                -e DB_NAME="formapp" \
-                -e DB_USER="dbadmin" \
-                -e DB_PASSWORD="${var.db_password}" \
+              # Run container 
+              docker run -d -p 3000:3000 \
+                -e DATABASE_URL="postgres://${aws_db_instance.postgres.username}:${aws_db_instance.postgres.password}@${aws_db_instance.postgres.endpoint}/${aws_db_instance.postgres.db_name}" \
                 --restart always \
                 ruslanhlukhov/node-form-app:latest
               EOF
-  )
+)
 
   tag_specifications {
     resource_type = "instance"
@@ -225,15 +211,15 @@ resource "aws_launch_template" "app_lt" {
   }
 }
 
-# Сама группа автоскейлинга
+# 7. Auto Scailing group
 resource "aws_autoscaling_group" "app_asg" {
-  desired_capacity    = 1 # Сколько серверов держать запущенными по умолчанию
-  max_size            = 2 # Максимум серверов при пиковой нагрузке
-  min_size            = 1 # Минимум серверов
+  desired_capacity    = 1 # Default count servers
+  max_size            = 2 # Max. Servers
+  min_size            = 1 # Min. servers
   vpc_zone_identifier = data.aws_subnets.default.ids
 
   target_group_arns = [aws_lb_target_group.app_tg.arn]
-  health_check_type = "ELB" # Проверять здоровье серверов через балансировщик
+  health_check_type = "ELB" # Health ALB
 
   launch_template {
     id      = aws_launch_template.app_lt.id
@@ -244,9 +230,8 @@ resource "aws_autoscaling_group" "app_asg" {
 }
 
 
-# ==========================================
-# OUTPUTS
-# ==========================================
+
+# 8. OUTPUTS
 
 output "app_url" {
   value = "http://${aws_lb.app_alb.dns_name}"

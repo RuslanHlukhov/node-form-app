@@ -1,5 +1,5 @@
 const express = require('express');
-const sqlite3 = require('sqlite3').verbose();
+const { Pool } = require('pg');
 const path = require('path');
 
 const app = express();
@@ -8,23 +8,26 @@ const PORT = process.env.PORT || 3000;
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-// Подключение к базе данных SQLite
-const dbFile = path.join(__dirname, 'database.sqlite');
-const db = new sqlite3.Database(dbFile, (err) => {
-    if (err) {
-        console.error('Ошибка при инициализации БД:', err.message);
-    } else {
-        console.log('Успешное подключение к базе данных SQLite.');
-    }
+// Подключение к PostgreSQL (настройки берутся из переменных окружения AWS)
+const pool = new Pool({
+    connectionString: process.env.DATABASE_URL,
+    // Если RDS требует SSL (некоторые конфигурации), можно включить:
+    // ssl: { rejectUnauthorized: false }
 });
 
-// Создание таблицы
-db.run(`CREATE TABLE IF NOT EXISTS messages (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL,
-    email TEXT NOT NULL,
+// Проверка подключения и создание таблицы при старте
+pool.query(`CREATE TABLE IF NOT EXISTS messages (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    email VARCHAR(100) NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-)`);
+)`, (err) => {
+    if (err) {
+        console.error('Ошибка при инициализации таблицы в PostgreSQL:', err.message);
+    } else {
+        console.log('Успешное подключение и проверка таблицы в PostgreSQL.');
+    }
+});
 
 // Главная страница с формой
 app.get('/', (req, res) => {
@@ -44,7 +47,7 @@ app.get('/', (req, res) => {
             </style>
         </head>
         <body>
-            <h2>Форма обратной связи</h2>
+            <h2>Форма обратной связи (AWS RDS)</h2>
             <form action="/submit" method="POST">
                 <label>Имя:</label>
                 <input type="text" name="name" required>
@@ -72,24 +75,29 @@ app.get('/', (req, res) => {
 });
 
 // Обработка отправки
-app.post('/submit', (req, res) => {
+app.post('/submit', async (req, res) => {
     const { name, email } = req.body;
-    db.run(`INSERT INTO messages (name, email) VALUES (?, ?)`, [name, email], (err) => {
-        if (err) {
-            return res.status(500).send("Ошибка сохранения данных.");
-        }
+    try {
+        await pool.query(
+            `INSERT INTO messages (name, email) VALUES ($1, $2)`,
+            [name, email]
+        );
         res.redirect('/');
-    });
+    } catch (err) {
+        console.error('Ошибка сохранения:', err.message);
+        res.status(500).send("Ошибка сохранения данных в базу.");
+    }
 });
 
 // Получение списка записей
-app.get('/messages', (req, res) => {
-    db.all(`SELECT * FROM messages`, [], (err, rows) => {
-        if (err) {
-            return res.status(500).json({ error: err.message });
-        }
-        res.json(rows);
-    });
+app.get('/messages', async (req, res) => {
+    try {
+        const result = await pool.query(`SELECT * FROM messages ORDER BY id DESC`);
+        res.json(result.rows);
+    } catch (err) {
+        console.error('Ошибка чтения:', err.message);
+        res.status(500).json({ error: err.message });
+    }
 });
 
 app.listen(PORT, '0.0.0.0', () => {

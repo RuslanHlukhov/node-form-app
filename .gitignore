@@ -3,10 +3,11 @@ terraform.tfvars
 *.tfvars
 
 # Ignore work folder and cashe
+terraform.tfvars
+*.tfvars
 .terraform/
 terraform.tfstate
-terraform.tfstate.backup
-crash.log
+terraform.tfstate.*
 *.tfstate*
 
 # System files OS

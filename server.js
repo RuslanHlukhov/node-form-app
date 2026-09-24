@@ -1,102 +1,82 @@
 const express = require('express');
 const { Pool } = require('pg');
+const multer = require('multer');
+const { S3Client, PutObjectCommand } = require('@aws-sdk/client-s3');
 const path = require('path');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+// Настройка S3 клиента (подхватит IAM роль инстанса)
+const s3Client = new S3Client({ region: process.env.AWS_REGION || 'us-east-1' });
+const BUCKET_NAME = process.env.S3_BUCKET_NAME;
+
+// Настройка Multer для сохранения файлов в память
+const upload = multer({ storage: multer.memoryStorage() });
+
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
-// Подключение к PostgreSQL (настройки берутся из переменных окружения AWS)
+// Раздача статических файлов из папки 'public' (где лежит index.html)
+app.use(express.static(path.join(__dirname, 'public')));
+
+// Подключение к PostgreSQL
+const connectionString = process.env.DATABASE_URL || "postgres://dbadmin:teastdatabase1994!@node-app-postgres-db.cvygc8msofus.us-east-1.rds.amazonaws.com:5432/formapp";
+
+console.log("DEBUG DATABASE_URL:", connectionString);
 const pool = new Pool({
-    connectionString: process.env.DATABASE_URL,
-    // Если RDS требует SSL (некоторые конфигурации), можно включить:
-    // ssl: { rejectUnauthorized: false }
+    connectionString: connectionString,
+    ssl: {
+        rejectUnauthorized: false
+    }
 });
 
-// Проверка подключения и создание таблицы при старте
-pool.query(`CREATE TABLE IF NOT EXISTS messages (
+// Инициализация таблицы
+pool.query(`CREATE TABLE IF NOT EXISTS users (
     id SERIAL PRIMARY KEY,
-    name VARCHAR(100) NOT NULL,
+    username VARCHAR(100) NOT NULL,
     email VARCHAR(100) NOT NULL,
+    password VARCHAR(255) NOT NULL,
+    photo_url TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 )`, (err) => {
     if (err) {
-        console.error('Ошибка при инициализации таблицы в PostgreSQL:', err.message);
+        console.error('Ошибка при инициализации таблицы:', err.message);
     } else {
-        console.log('Успешное подключение и проверка таблицы в PostgreSQL.');
+        console.log('Таблица users успешно проверена/создана.');
     }
 });
 
-// Главная страница с формой
-app.get('/', (req, res) => {
-    res.send(`
-        <!DOCTYPE html>
-        <html lang="ru">
-        <head>
-            <meta charset="UTF-8">
-            <title>Форма регистрации</title>
-            <style>
-                body { font-family: Arial, sans-serif; margin: 50px; background: #f4f4f9; }
-                form { background: white; padding: 20px; border-radius: 8px; max-width: 400px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
-                input { width: 100%; padding: 8px; margin: 10px 0; box-sizing: border-box; border: 1px solid #ccc; border-radius: 4px; }
-                button { background: #007bff; color: white; border: none; padding: 10px 15px; border-radius: 4px; cursor: pointer; }
-                button:hover { background: #0056b3; }
-                ul { margin-top: 20px; background: white; padding: 20px; border-radius: 8px; max-width: 400px; }
-            </style>
-        </head>
-        <body>
-            <h2>Форма обратной связи (AWS RDS)</h2>
-            <form action="/submit" method="POST">
-                <label>Имя:</label>
-                <input type="text" name="name" required>
-                <label>Email:</label>
-                <input type="email" name="email" required>
-                <button type="submit">Отправить</button>
-            </form>
-            <h3>Сохраненные записи:</h3>
-            <ul id="list"></ul>
-            <script>
-                fetch('/messages')
-                    .then(res => res.json())
-                    .then(data => {
-                        const list = document.getElementById('list');
-                        data.forEach(item => {
-                            const li = document.createElement('li');
-                            li.textContent = \`\${item.name} (\${item.email})\`;
-                            list.appendChild(li);
-                        });
-                    });
-            </script>
-        </body>
-        </html>
-    `);
-});
+// Обработка регистрации с загрузкой фото в S3
+app.post('/register', upload.single('photo'), async (req, res) => {
+    const { username, email, password } = req.body;
+    const file = req.file;
 
-// Обработка отправки
-app.post('/submit', async (req, res) => {
-    const { name, email } = req.body;
     try {
+        let photoUrl = null;
+
+        if (file) {
+            const fileName = `photos/${Date.now()}-${file.originalname}`;
+            
+            await s3Client.send(new PutObjectCommand({
+                Bucket: BUCKET_NAME,
+                Key: fileName,
+                Body: file.buffer,
+                ContentType: file.mimetype,
+            }));
+
+            photoUrl = `https://${BUCKET_NAME}.s3.amazonaws.com/${fileName}`;
+        }
+
         await pool.query(
-            `INSERT INTO messages (name, email) VALUES ($1, $2)`,
-            [name, email]
+            `INSERT INTO users (username, email, password, photo_url) VALUES ($1, $2, $3, $4)`,
+            [username, email, password, photoUrl]
         );
-        res.redirect('/');
-    } catch (err) {
-        console.error('Ошибка сохранения:', err.message);
-        res.status(500).send("Ошибка сохранения данных в базу.");
-    }
-});
 
-// Получение списка записей
-app.get('/messages', async (req, res) => {
-    try {
-        const result = await pool.query(`SELECT * FROM messages ORDER BY id DESC`);
-        res.json(result.rows);
+        res.send(`<h2>Регистрация прошла успешно!</h2><p><a href="/">Назад</a></p>`);
     } catch (err) {
-        console.error('Ошибка чтения:', err.message);
-        res.status(500).json({ error: err.message });
+        console.error('Ошибка при регистрации:', err.message);
+        res.status(500).send("Ошибка сервера при регистрации.");
     }
 });
 

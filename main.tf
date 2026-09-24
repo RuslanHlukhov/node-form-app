@@ -4,7 +4,6 @@ provider "aws" {
   secret_key = var.aws_secret_key
 }
 
-
 # Network
 
 data "aws_vpc" "default" {
@@ -44,7 +43,7 @@ resource "aws_security_group" "alb_sg" {
 
 # 2. Security Group for ASG (port 3000 only from ALB)
 resource "aws_security_group" "app_sg" {
-  name_prefix        = "node-app-sg"
+  name_prefix = "node-app-sg"
   description = "Allow port 3000 from ALB and SSH"
   vpc_id      = data.aws_vpc.default.id
 
@@ -72,7 +71,7 @@ resource "aws_security_group" "app_sg" {
 
 # 3. Security Group for BD 
 resource "aws_security_group" "db_sg" {
-  name_prefix        = "db-security-group"
+  name_prefix = "db-security-group"
   description = "Allow PostgreSQL access from app servers"
   vpc_id      = data.aws_vpc.default.id
 
@@ -89,13 +88,66 @@ resource "aws_security_group" "db_sg" {
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
-    lifecycle {
+  lifecycle {
     create_before_destroy = true
   }
 }
 
 
-# 3. DataBase
+# S3 Bucket для загрузки картинок (вынесли наверх, чтобы использовать его имя в launch_template)
+resource "aws_s3_bucket" "app_images" {
+  bucket_prefix = "node-app-images-"
+  force_destroy = true
+}
+
+# IAM роль и политика для EC2, чтобы приложение могло писать в S3
+resource "aws_iam_role" "ec2_s3_role" {
+  name = "node-app-ec2-s3-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = "sts:AssumeRole"
+        Effect = "Allow"
+        Principal = {
+          Service = "ec2.amazonaws.com"
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy" "s3_access_policy" {
+  name = "s3-access-policy"
+  role = aws_iam_role.ec2_s3_role.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:PutObject",
+          "s3:GetObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          aws_s3_bucket.app_images.arn,
+          "${aws_s3_bucket.app_images.arn}/*"
+        ]
+      }
+    ]
+  })
+}
+
+resource "aws_iam_instance_profile" "ec2_profile" {
+  name = "node-app-ec2-profile"
+  role = aws_iam_role.ec2_s3_role.name
+}
+
+
+# 4. DataBase
 resource "aws_db_subnet_group" "db_subnet_group" {
   name       = "my-app-db-subnet-group"
   subnet_ids = data.aws_subnets.default.ids
@@ -123,7 +175,7 @@ resource "aws_db_instance" "postgres" {
 }
 
 
-# 4. ALB
+# 5. ALB
 resource "aws_lb" "app_alb" {
   name               = "node-app-alb"
   internal           = false
@@ -164,7 +216,7 @@ resource "aws_lb_listener" "web" {
 }
 
 
-# 5. AUTO SCALING GROUP (ASG)
+# 6. AUTO SCALING GROUP & LAUNCH TEMPLATE
 
 data "aws_ami" "ubuntu" {
   most_recent = true
@@ -179,29 +231,33 @@ data "aws_ami" "ubuntu" {
   owners = ["099720109477"]
 }
 
-# 6. EC2 instances
 resource "aws_launch_template" "app_lt" {
   name_prefix   = "node-app-lt-"
   image_id      = data.aws_ami.ubuntu.id
-  instance_type = "t2.micro"
+  instance_type = "t3.micro"
 
   vpc_security_group_ids = [aws_security_group.app_sg.id]
 
-user_data = base64encode(<<-EOF
+  # Привязываем IAM-профиль, чтобы инстанс автоматически имел доступ к S3
+  iam_instance_profile {
+    name = aws_iam_instance_profile.ec2_profile.name
+  }
+
+  user_data = base64encode(<<-EOF
               #!/bin/bash
-              # Install Docker
               apt-get update -y
               apt-get install -y docker.io git
               systemctl start docker
               systemctl enable docker
               
-              # Run container 
               docker run -d -p 3000:3000 \
                 -e DATABASE_URL="postgres://${aws_db_instance.postgres.username}:${aws_db_instance.postgres.password}@${aws_db_instance.postgres.endpoint}/${aws_db_instance.postgres.db_name}" \
+                -e AWS_REGION="us-east-1" \
+                -e S3_BUCKET_NAME="${aws_s3_bucket.app_images.id}" \
                 --restart always \
-                ruslanhlukhov/node-form-app:latest
+                ruslanhlukhov/node-form-app:v15
               EOF
-)
+  )
 
   tag_specifications {
     resource_type = "instance"
@@ -211,15 +267,14 @@ user_data = base64encode(<<-EOF
   }
 }
 
-# 7. Auto Scailing group
 resource "aws_autoscaling_group" "app_asg" {
-  desired_capacity    = 1 # Default count servers
-  max_size            = 2 # Max. Servers
-  min_size            = 1 # Min. servers
+  desired_capacity    = 1
+  max_size            = 2
+  min_size            = 1
   vpc_zone_identifier = data.aws_subnets.default.ids
 
   target_group_arns = [aws_lb_target_group.app_tg.arn]
-  health_check_type = "ELB" # Health ALB
+  health_check_type = "ELB"
 
   launch_template {
     id      = aws_launch_template.app_lt.id
@@ -230,8 +285,7 @@ resource "aws_autoscaling_group" "app_asg" {
 }
 
 
-
-# 8. OUTPUTS
+# 7. OUTPUTS
 
 output "app_url" {
   value = "http://${aws_lb.app_alb.dns_name}"

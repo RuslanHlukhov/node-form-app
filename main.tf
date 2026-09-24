@@ -136,6 +136,11 @@ resource "aws_iam_role_policy" "s3_access_policy" {
           aws_s3_bucket.app_images.arn,
           "${aws_s3_bucket.app_images.arn}/*"
         ]
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["secretsmanager:GetSecretValue"]
+        Resource = aws_db_instance.postgres.master_user_secret[0].secret_arn
       }
     ]
   })
@@ -163,14 +168,14 @@ resource "aws_db_instance" "postgres" {
   engine_version    = "15"
   instance_class    = "db.t3.micro"
   allocated_storage = 20
-  
-  db_name  = "formapp"
-  username = "dbadmin"
-  password = var.db_password
-  
+
+  db_name                     = "formapp"
+  username                    = "dbadmin"
+  manage_master_user_password = true
+
   db_subnet_group_name   = aws_db_subnet_group.db_subnet_group.name
   vpc_security_group_ids = [aws_security_group.db_sg.id]
-  
+
   skip_final_snapshot = true
 }
 
@@ -189,14 +194,14 @@ resource "aws_lb" "app_alb" {
 }
 
 resource "aws_lb_target_group" "app_tg" {
-  name     = "node-app-target-group"
-  port     = 3000
-  protocol = "HTTP"
-  vpc_id   = data.aws_vpc.default.id
+  name        = "node-app-target-group"
+  port        = 3000
+  protocol    = "HTTP"
+  vpc_id      = data.aws_vpc.default.id
   target_type = "instance"
 
   health_check {
-    path                = "/"
+    path                = "/health"
     interval            = 30
     timeout             = 5
     healthy_threshold   = 2
@@ -243,21 +248,14 @@ resource "aws_launch_template" "app_lt" {
     name = aws_iam_instance_profile.ec2_profile.name
   }
 
-  user_data = base64encode(<<-EOF
-              #!/bin/bash
-              apt-get update -y
-              apt-get install -y docker.io git
-              systemctl start docker
-              systemctl enable docker
-              
-              docker run -d -p 3000:3000 \
-                -e DATABASE_URL="postgres://${aws_db_instance.postgres.username}:${aws_db_instance.postgres.password}@${aws_db_instance.postgres.endpoint}/${aws_db_instance.postgres.db_name}" \
-                -e AWS_REGION="us-east-1" \
-                -e S3_BUCKET_NAME="${aws_s3_bucket.app_images.id}" \
-                --restart always \
-                ruslanhlukhov/node-form-app:v15
-              EOF
-  )
+  user_data = base64encode(templatefile("${path.module}/user_data.sh.tpl", {
+    secret_arn = aws_db_instance.postgres.master_user_secret[0].secret_arn
+    db_host    = aws_db_instance.postgres.address
+    db_user    = aws_db_instance.postgres.username
+    db_name    = aws_db_instance.postgres.db_name
+    bucket     = aws_s3_bucket.app_images.id
+    app_image  = "ruslanhlukhov/node-form-app:v16"
+  }))
 
   tag_specifications {
     resource_type = "instance"
@@ -282,6 +280,13 @@ resource "aws_autoscaling_group" "app_asg" {
   }
 
   force_delete = true
+
+  instance_refresh {
+    strategy = "Rolling"
+    preferences {
+      min_healthy_percentage = 100
+    }
+  }
 }
 
 

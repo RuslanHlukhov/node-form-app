@@ -3,8 +3,17 @@ set -euxo pipefail
 exec > >(tee /var/log/user-data.log) 2>&1
 
 apt-get update -y
-apt-get install -y docker.io awscli jq
+apt-get install -y docker.io jq snapd unzip curl
 systemctl enable --now docker
+
+# Установка AWS CLI v2
+curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "/tmp/awscliv2.zip"
+unzip -q /tmp/awscliv2.zip -d /tmp
+/tmp/aws/install
+
+# SSM Agent
+snap install amazon-ssm-agent --classic
+systemctl enable --now snap.amazon-ssm-agent.amazon-ssm-agent.service
 
 DB_PASSWORD=$(aws secretsmanager get-secret-value \
   --secret-id "${secret_arn}" \

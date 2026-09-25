@@ -1,3 +1,13 @@
+terraform {
+  backend "s3" {
+    bucket         = "ruslan-tf-state-node-app-2026"
+    key            = "node-form-app/terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "terraform-locks"
+    encrypt        = true
+  }
+}
+
 provider "aws" {
   region = "us-east-1"
   # access_key = var.aws_access_key

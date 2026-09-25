@@ -8,13 +8,13 @@ jobs:
   terraform-security-scan:
   runs-on: ubuntu-latest
   steps:
-    - name : Checkout code
-      uses: action/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    - name : Run tfsec
-      uses : aquasecurity/tfsec-action@v1.0.3
-      with :
-        soft_fail:true
+      - name: Run tfsec
+        uses: aquasecurity/tfsec-action@v1.0.3
+        with:
+          soft_fail: true
 
 
   build-and-push:
@@ -23,7 +23,7 @@ jobs:
     steps:
       # 1. Скачиваем исходный код проекта в среду выполнения
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       # 2. Авторизуемся в Docker Hub используя секреты из настроек репозитория
       - name: Log in to Docker Hub
